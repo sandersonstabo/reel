@@ -17,11 +17,12 @@ impl Pacer {
     }
 
     pub fn admit(&mut self, time: i64) -> Option<i64> {
-        let slot = time.div_euclid(self.interval);
-        match (time >= 0, self.last_slot) {
-            (false, _) => None,
-            (true, Some(last)) if slot <= last => None,
-            (true, _) => {
+        let nearest = (time + self.interval / 2).div_euclid(self.interval);
+        let slot = self.last_slot.map_or(nearest, |last| nearest.max(last + 1));
+        let early = slot * self.interval - time;
+        match time >= 0 && early <= self.interval / 2 {
+            false => None,
+            true => {
                 self.last_slot = Some(slot);
                 Some(slot * self.interval)
             }
