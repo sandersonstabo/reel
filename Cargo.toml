@@ -2,6 +2,9 @@
 name = "reel"
 version = "0.1.0"
 edition = "2024"
+description = "Lightweight game clipper for Windows"
+license = "BSD-3-Clause"
+repository = "https://github.com/sandersonstabo/reel"
 
 [dependencies]
 windows-core = "0.62"

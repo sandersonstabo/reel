@@ -1,0 +1,64 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: rustup update stable && rustup default stable
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          "value=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix build installer/reel.wxs -arch x64 `
+            -d Version=${{ steps.version.outputs.value }} `
+            -d Binary=target/release/reel.exe `
+            -o reel-${{ steps.version.outputs.value }}-x64.msi
+          Copy-Item target/release/reel.exe reel-${{ steps.version.outputs.value }}-x64-portable.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reel-${{ steps.version.outputs.value }}
+          path: |
+            reel-*.msi
+            reel-*-portable.exe
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ("v${{ steps.version.outputs.value }}" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} does not match Cargo version ${{ steps.version.outputs.value }}"
+          }
+          gh release create ${{ github.ref_name }} `
+            reel-${{ steps.version.outputs.value }}-x64.msi `
+            reel-${{ steps.version.outputs.value }}-x64-portable.exe `
+            --title "Reel ${{ steps.version.outputs.value }}" `
+            --generate-notes

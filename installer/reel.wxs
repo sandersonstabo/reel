@@ -1,0 +1,52 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Reel"
+    Manufacturer="Sander Sonstabo"
+    Version="$(Version)"
+    UpgradeCode="E8058B54-A349-4378-A484-875AB12ADACE"
+    Scope="perUser"
+    Language="1033">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Reel is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="ReelIcon.exe" SourceFile="$(Binary)" />
+    <Property Id="ARPPRODUCTICON" Value="ReelIcon.exe" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/sandersonstabo/reel" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDirectory" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Reel" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <Component Id="Executable" Directory="INSTALLFOLDER">
+        <File Id="ReelExe" Source="$(Binary)" Name="reel.exe" />
+        <RegistryValue Root="HKCU" Key="Software\Reel" Name="Executable" Type="integer" Value="1" KeyPath="yes" />
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RemoveFolder Id="RemoveProgramsDirectory" Directory="ProgramsDirectory" On="uninstall" />
+      </Component>
+      <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder">
+        <Shortcut
+          Id="ReelShortcut"
+          Name="Reel"
+          Description="Lightweight game clipper"
+          Target="[INSTALLFOLDER]reel.exe"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="ReelIcon.exe" />
+        <RegistryValue Root="HKCU" Key="Software\Reel" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </Feature>
+
+    <CustomAction Id="QuitRunning" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]reel.exe&quot; quit" Execute="immediate" Return="ignore" />
+    <CustomAction Id="RemoveAutostart" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]reel.exe&quot; cleanup" Execute="immediate" Return="ignore" />
+    <CustomAction Id="LaunchReel" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]reel.exe&quot;" Execute="immediate" Return="asyncNoWait" />
+
+    <InstallExecuteSequence>
+      <Custom Action="QuitRunning" Before="InstallValidate" Condition="WIX_UPGRADE_DETECTED OR REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="RemoveAutostart" After="QuitRunning" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="LaunchReel" After="InstallFinalize" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>
