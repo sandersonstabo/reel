@@ -5,6 +5,7 @@ fn main() {
     let code = match args.as_slice() {
         [] => reel::tray::app::main(reel::tray::app::Launch::Quiet),
         [command] if command == "show" => reel::tray::app::main(reel::tray::app::Launch::Greet),
+        [command] if command == "installed" => reel::tray::app::main(reel::tray::app::Launch::Installed),
         [command] if command == "quit" => reel::tray::control::quit(),
         [command] if command == "cleanup" => reel::tray::control::cleanup(),
         [command, window] if command == "record" => match window.parse::<isize>() {

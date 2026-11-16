@@ -8,6 +8,8 @@ mod glyph {
 const SIZES: [u32; 7] = [16, 20, 24, 32, 40, 48, 64];
 const RT_ICON: u16 = 3;
 const RT_GROUP_ICON: u16 = 14;
+const RT_MANIFEST: u16 = 24;
+const MANIFEST_FLAGS: u16 = 0x1030;
 const ICON_FLAGS: u16 = 0x1010;
 const ENGLISH: u16 = 0x0409;
 
@@ -58,6 +60,7 @@ fn resource(kind: u16, id: u16, flags: u16, data: &[u8]) -> Vec<u8> {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/tray/glyph.rs");
+    println!("cargo:rerun-if-changed=installer/reel.manifest");
     if !env::var("TARGET").is_ok_and(|target| target.contains("windows-msvc")) {
         return;
     }
@@ -90,7 +93,13 @@ fn main() {
         })
         .collect();
     let group = resource(RT_GROUP_ICON, 1, ICON_FLAGS, &[directory, entries].concat());
+    let manifest = resource(
+        RT_MANIFEST,
+        1,
+        MANIFEST_FLAGS,
+        &fs::read("installer/reel.manifest").expect("manifest is readable"),
+    );
     let output = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join("reel.res");
-    fs::write(&output, [empty, icons, group].concat()).expect("resource file is writable");
+    fs::write(&output, [empty, icons, group, manifest].concat()).expect("resource file is writable");
     println!("cargo:rustc-link-arg-bins={}", output.display());
 }

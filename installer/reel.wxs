@@ -42,7 +42,7 @@
 
     <CustomAction Id="QuitRunning" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]reel.exe&quot; quit" Execute="immediate" Return="ignore" />
     <CustomAction Id="RemoveAutostart" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]reel.exe&quot; cleanup" Execute="immediate" Return="ignore" />
-    <CustomAction Id="LaunchReel" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]reel.exe&quot; show" Execute="immediate" Return="asyncNoWait" />
+    <CustomAction Id="LaunchReel" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]reel.exe&quot; installed" Execute="immediate" Return="asyncNoWait" />
 
     <InstallExecuteSequence>
       <Custom Action="QuitRunning" Before="InstallValidate" Condition="WIX_UPGRADE_DETECTED OR REMOVE~=&quot;ALL&quot;" />

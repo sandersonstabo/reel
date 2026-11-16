@@ -42,6 +42,7 @@ use super::{
     autostart,
     icon::Icons,
     menu::{self, Choice, Item, entry},
+    welcome,
 };
 use crate::{
     detect::{
@@ -62,6 +63,7 @@ const WM_GREET: u32 = WM_APP + 2;
 pub enum Launch {
     Quiet,
     Greet,
+    Installed,
 }
 const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 const HOTKEY_TOGGLE: i32 = 1;
@@ -562,8 +564,10 @@ fn greet_running_copy() {
 pub fn main(launch: Launch) -> i32 {
     let _instance = unsafe { CreateMutexW(None, true, w!("Local\\Reel.Tray")) };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        if launch == Launch::Greet {
-            greet_running_copy();
+        match launch {
+            Launch::Quiet => {}
+            Launch::Greet => greet_running_copy(),
+            Launch::Installed => welcome::installed(&store::load()),
         }
         return 0;
     }
@@ -601,6 +605,9 @@ pub fn main(launch: Launch) -> i32 {
         }
     });
     log::line("tray started");
+    if launch == Launch::Installed {
+        welcome::installed(&settings);
+    }
     trim();
     let mut message = MSG::default();
     while unsafe { GetMessageW(&mut message, None, 0, 0) }.as_bool() {
