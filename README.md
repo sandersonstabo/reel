@@ -1,73 +1,86 @@
-# Reel: a lightweight game clipper for Windows
+# Reel
 
-**Reel is a free, open-source game clipping app for Windows.** It runs quietly in your tray, starts buffering when you play a game, and saves the last moments of gameplay as a clip when you press a key. It's a lightweight alternative to Medal.tv, NVIDIA ShadowPlay and Xbox Game Bar for anyone who just wants instant replay clips.
+A tiny game clipper for Windows. It sits in your tray, notices when you're playing a game, and keeps the last few seconds in memory so you can press **F9** and save that play you just made.
 
-[Download the latest release](https://github.com/sandersonstabo/reel/releases/latest)
+No account, no launcher, no overlay, no feed. Just clips on your disk.
 
-## Who it's for
+## Is this for you?
 
 Reel is for you if:
 
-- you want **instant replay clips** of your games, saved with one key,
-- you don't want a **resource-heavy app** running all day just to do that,
-- you're tired of **arbitrary limits** like watermarks, forced downscaling, upload quotas or paid tiers for quality.
+- you want **instant replay clips** of your games,
+- you don't want a **heavyweight app** like Medal.tv running all day just to do that,
+- you're done with **arbitrary limits**: no watermark, no forced downscaling, no upload quota, no "premium" tier for quality. You choose the resolution, frame rate, codec and file size, and you get exactly that.
 
-With Reel you choose the quality, and your clips stay on your PC.
+What it is **not**: a streaming tool, a video editor, or a social network. If you want those, OBS or Medal are better fits.
 
-## Features
+## How it works
 
-- **Lightweight.** A small installer, near-zero memory when idle, and encoding on your graphics card, so it stays out of your game's way.
-- **Records only when you play.** Reel stays idle until it detects a game, and stops when you close it.
-- **Nothing hits your disk until you clip.** Recent gameplay stays in memory. Press the clip key and the moment is saved to your Videos folder.
-- **Your quality, your rules.** Native resolution and frame rate by default, with modern codecs and an optional file-size target for easy sharing.
-- **No watermark, no account, no limits.** No sign-up, no feed and no upload quotas.
-- **Private by design.** Fully local, no telemetry and no internet connection required.
-- **Configured from the tray.** No windows or launchers. Right-click the tray icon and everything is there.
-- **Open source.** BSD 3-Clause licensed, free forever.
+- **It does nothing until you play.** Reel checks which window is in front about once a second. When a game is in front it starts buffering. When the game closes it stops. On the desktop, in your browser or in Discord, nothing is captured at all.
+- **Clips stay in memory until you save.** The last N seconds live in RAM, already encoded. Nothing touches your disk until you press F9. Then the clip is written to `Videos\Reel\<Game>\`.
+- **Your GPU does the work.** Capture, scaling and encoding run on your graphics card's video encoder, so the CPU barely notices. Measured on a Radeon RX 9070 XT: about 0.3% of one CPU core while capturing Valorant at 60 fps.
+- **Game audio only.** Clips contain the game's sound, including in-game voice chat, but not Spotify, Discord calls or notification sounds.
+- **Small.** The installer is under 1 MB. The tray app idles at around 200 KB of RAM. The recorder only exists while a game is running.
+
+### Game detection
+
+A window counts as a game if either:
+
+1. Windows already knows it's a game: the same list Xbox Game Bar uses (Win+G), or
+2. it's running fullscreen from a game library folder (Steam, Epic, Riot, GOG, Xbox, EA, Ubisoft, Battlestate).
+
+So browsers and video players never trigger it, even in fullscreen.
+
+### Anti-cheat
+
+Reel never touches the game process. Video comes from Windows' own screen capture API (the same one OBS's Window Capture and Discord screen share use), and audio comes from the Windows audio engine. There's nothing injected and no driver. It's used with Valorant (Vanguard) without problems, but no tool can promise every anti-cheat will always be happy.
 
 ## Install
 
-1. Download the `.msi` installer from [Releases](https://github.com/sandersonstabo/reel/releases/latest).
-2. Open it. No admin rights are needed.
-3. If Windows SmartScreen warns about an unrecognized app, choose **More info → Run anyway**. The installer isn't code-signed yet.
+1. Download `reel-x.y.z-x64.msi` from [Releases](https://github.com/sandersonstabo/reel/releases/latest).
+2. Open it. No admin rights needed: it installs just for you, into `%LOCALAPPDATA%\Programs\Reel`.
+3. Windows SmartScreen may warn about an unrecognized app the first time, because the installer isn't code-signed yet. Click **More info → Run anyway**.
 
-Reel starts right away and lives in your system tray. Updates install over the old version. Uninstall it from Settings → Apps. A portable `.exe` is also available on each release.
+Reel starts right away and lives in your tray. To update, install a newer MSI over it. To remove it, use Settings → Apps.
+
+There's also a portable `.exe` on each release if you don't want an installer.
 
 ## Use
 
-- Play a game. Reel starts buffering automatically.
-- Press **F9** to save a clip.
-- Press **F8** to turn clipping on or off.
-- Right-click the tray icon for settings: clip length, quality, file-size target, codec and hotkey.
+| Key | What it does |
+| --- | --- |
+| **F9** | Save the last 30 seconds (or whatever you set) |
+| **F8** | Turn clipping on or off |
 
-## FAQ
+Everything else is in the tray menu (right-click the dot):
 
-### What is Reel?
-Reel is a free, open-source instant replay and game clipping tool for Windows. It keeps recent gameplay in memory and saves it as an MP4 clip when you press a hotkey.
+| Setting | Options |
+| --- | --- |
+| Clip length | 15 s, 30 s, 1 min, 2 min |
+| Size target | None, 10, 20, 30, 50, 100 MB |
+| Resolution | Native, 2160p, 1440p, 1080p, 720p |
+| Frame rate | 30, 60 fps |
+| Codec | H.264, H.265 (HEVC), AV1 |
+| Clip key | F6, F7, F9, F10, F11 |
+| Start with Windows | on or off |
 
-### Is Reel a good Medal.tv alternative?
-Yes, if what you want from Medal is clipping. Reel focuses only on capturing clips locally, with low resource usage, no account and no watermark. It has no social feed or cloud sharing.
+**Size target** is for sharing. Pick 10 MB and every clip fits under Discord's free upload limit: Reel lowers the bitrate, and the resolution if it has to, to make that happen. The menu shows what you'll get, e.g. "10 MB (720p60)". With **None** you get full quality at your native resolution.
 
-### Does Reel record all the time?
-No. Reel only buffers while a game is running, and it only writes a file when you save a clip.
+**Codec:** H.264 plays everywhere. H.265 and AV1 give smaller files at the same quality but don't play in every app or browser. Codecs your GPU can't encode are greyed out.
 
-### Does Reel slow down my games?
-Reel is designed to have minimal impact. Capture and encoding use your graphics card's built-in video encoder rather than your CPU, and the app does nothing while you're not gaming.
+The tray dot shows the state: a grey ring means off, a grey dot means waiting for a game, a red dot means buffering.
 
-### Does Reel add a watermark or limit clip quality?
-No. Clips are saved at the quality you choose, up to your native resolution, with no watermark.
+## Requirements
 
-### Can I make clips small enough for Discord?
-Yes. Set a file-size target in the tray menu and Reel keeps every clip under it.
+- Windows 11, or Windows 10 version 2004 or newer
+- A GPU with a hardware video encoder: most AMD, NVIDIA and Intel GPUs from the last several years
+- RAM for the buffer: about 100 MB for 30 s at 1440p60, less with a size target
 
-### Is Reel safe to use with anti-cheat games like Valorant?
-Reel uses Windows' own capture features and doesn't modify or inject into games. It has been used with Valorant without problems, but no third-party tool can guarantee compatibility with every anti-cheat system.
+So far it has been tested on Windows 11 with an AMD Radeon RX 9070 XT. Reports from NVIDIA and Intel users are very welcome.
 
-### Is Reel free?
-Yes. Reel is free and open source under the BSD 3-Clause license.
+## Privacy
 
-### Which Windows versions are supported?
-Windows 11, and Windows 10 version 2004 or newer, with a graphics card that has a hardware video encoder (most AMD, NVIDIA and Intel GPUs from recent years).
+Reel has no account, no telemetry and no network access. Clips, settings (`%APPDATA%\Reel\settings.ini`) and a small log (`%LOCALAPPDATA%\Reel\reel.log`) stay on your PC.
 
 ## Build from source
 
@@ -78,11 +91,7 @@ cargo test --release
 cargo build --release
 ```
 
-CI builds the installer and publishes releases when a version tag is pushed.
-
-## Contributing
-
-Bug reports, hardware compatibility reports (especially NVIDIA and Intel) and pull requests are welcome in [Issues](https://github.com/sandersonstabo/reel/issues).
+The exe ends up in `target\release\reel.exe`. The installer is built by CI with [WiX](https://wixtoolset.org/) from `installer\reel.wxs`. Pushing a `v*` tag that matches the version in `Cargo.toml` publishes a release.
 
 ## License
 
