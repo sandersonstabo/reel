@@ -1,4 +1,8 @@
-use std::sync::{Arc, Mutex, mpsc::Sender};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+    mpsc::Sender,
+};
 
 use windows::{
     Foundation::TypedEventHandler,
@@ -22,7 +26,26 @@ use super::{FPS, TICKS_PER_SECOND, convert::Converter, gpu::Gpu, pacing::Pacer, 
 const POOL_BUFFERS: i32 = 2;
 const MAX_REPORTED_ERRORS: u32 = 5;
 
+#[derive(Default)]
+pub struct Stats {
+    pub arrived: AtomicU64,
+    pub paced_out: AtomicU64,
+    pub no_buffer: AtomicU64,
+}
+
+impl Stats {
+    pub fn summary(&self) -> String {
+        format!(
+            "arrived {}, thinned by pacer {}, dropped for lack of encoder buffer {}",
+            self.arrived.load(Ordering::Relaxed),
+            self.paced_out.load(Ordering::Relaxed),
+            self.no_buffer.load(Ordering::Relaxed),
+        )
+    }
+}
+
 struct Pipeline {
+    stats: Arc<Stats>,
     gpu: Gpu,
     device: IDirect3DDevice,
     writer: Arc<Mutex<Writer>>,
@@ -49,8 +72,10 @@ impl Pipeline {
             pool.Recreate(&self.device, DirectXPixelFormat::B8G8R8A8UIntNormalized, POOL_BUFFERS, content)?;
             self.pool_size = content;
         }
+        self.stats.arrived.fetch_add(1, Ordering::Relaxed);
         let time = frame.SystemRelativeTime()?.Duration - self.origin;
         let Some(stamp) = self.pacer.admit(time) else {
+            self.stats.paced_out.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         };
         let texture: ID3D11Texture2D = unsafe { frame.Surface()?.cast::<IDirect3DDxgiInterfaceAccess>()?.GetInterface()? };
@@ -68,7 +93,10 @@ impl Pipeline {
         };
         let mut writer = self.writer.lock().map_err(|_| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))?;
         let result = match writer.video_slot() {
-            None => Ok(()),
+            None => {
+                self.stats.no_buffer.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
             Some(slot) => converter
                 .convert(&texture, &slot.texture, slot.slice)
                 .and_then(|_| writer.write_video(&slot, stamp, self.pacer.interval())),
@@ -98,6 +126,7 @@ impl Capture {
         writer: Arc<Mutex<Writer>>,
         origin: i64,
         closed: Sender<()>,
+        stats: Arc<Stats>,
     ) -> Result<Self> {
         let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
         let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(window)? };
@@ -113,6 +142,7 @@ impl Capture {
         let _ = session.SetIsBorderRequired(false);
         let _ = session.SetIsCursorCaptureEnabled(false);
         let pipeline = Mutex::new(Pipeline {
+            stats,
             gpu: gpu.clone(),
             device,
             writer,

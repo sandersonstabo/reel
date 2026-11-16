@@ -3,10 +3,12 @@ use std::path::Path;
 use windows::{
     Win32::{
         Foundation::E_FAIL,
+        System::Com::CoTaskMemFree,
         Graphics::Direct3D11::{D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, ID3D11Texture2D},
         Media::MediaFoundation::{
             CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonMeanBitRate,
-            CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVGOPSize, IMF2DBuffer, IMFAttributes, IMFDXGIBuffer, IMFMediaType,
+            CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVGOPSize, IMF2DBuffer, IMFAttributes, IMFSinkWriterEx, IMFTransform,
+            MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute, IMFDXGIBuffer, IMFMediaType,
             IMFSample, IMFSinkWriter, IMFVideoSampleAllocatorEx, MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
             MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS,
             MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
@@ -22,7 +24,7 @@ use windows::{
             eAVEncCommonRateControlMode_PeakConstrainedVBR, eAVEncH264VProfile_High,
         },
     },
-    core::{Error, GUID, HSTRING, Interface, Result},
+    core::{Error, GUID, HSTRING, Interface, PWSTR, Result},
 };
 
 use super::{
@@ -47,6 +49,7 @@ pub struct Writer {
     video: u32,
     audio: u32,
     frames: u64,
+    video_chain: String,
 }
 
 unsafe impl Send for Writer {}
@@ -105,6 +108,44 @@ fn encoder_settings() -> Result<IMFAttributes> {
     Ok(settings)
 }
 
+fn transform_name(transform: &IMFTransform) -> String {
+    let Ok(attributes) = (unsafe { transform.GetAttributes() }) else {
+        return "unknown".to_string();
+    };
+    let mut raw = PWSTR::null();
+    let mut length = 0u32;
+    let name = match unsafe { attributes.GetAllocatedString(&MFT_FRIENDLY_NAME_Attribute, &mut raw, &mut length) } {
+        Ok(()) => {
+            let text = unsafe { raw.to_string() }.unwrap_or_default();
+            unsafe { CoTaskMemFree(Some(raw.0 as *const _)) };
+            text
+        }
+        Err(_) => "unnamed".to_string(),
+    };
+    let hardware = unsafe { attributes.GetStringLength(&MFT_ENUM_HARDWARE_URL_Attribute) }.is_ok();
+    match hardware {
+        true => format!("{name} [hardware]"),
+        false => format!("{name} [software]"),
+    }
+}
+
+fn describe_chain(sink: &IMFSinkWriter, stream: u32) -> String {
+    let Ok(extended) = sink.cast::<IMFSinkWriterEx>() else {
+        return "unknown".to_string();
+    };
+    let names: Vec<String> = (0..)
+        .map_while(|index| {
+            let mut category = GUID::zeroed();
+            let mut transform = None;
+            unsafe { extended.GetTransformForStream(stream, index, Some(&mut category), &mut transform) }
+                .ok()
+                .and(transform)
+        })
+        .map(|transform| transform_name(&transform))
+        .collect();
+    names.join(" -> ")
+}
+
 impl Writer {
     pub fn create(gpu: &Gpu, path: &Path) -> Result<Self> {
         let sink_attributes = attributes(2)?;
@@ -146,7 +187,9 @@ impl Writer {
             allocator.InitializeSampleAllocatorEx(MIN_SAMPLES, MAX_SAMPLES, &allocator_attributes, &raw_video)?;
             sink.BeginWriting()?;
         }
+        let video_chain = describe_chain(&sink, video);
         Ok(Self {
+            video_chain,
             sink: Some(sink),
             allocator,
             video,
@@ -157,6 +200,10 @@ impl Writer {
 
     fn sink(&self) -> Result<&IMFSinkWriter> {
         self.sink.as_ref().ok_or_else(|| Error::from(E_FAIL))
+    }
+
+    pub fn video_chain(&self) -> &str {
+        &self.video_chain
     }
 
     pub fn frames(&self) -> u64 {
