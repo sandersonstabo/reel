@@ -30,7 +30,8 @@ use windows::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW,
                 GetSystemMetrics, HICON, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
                 RegisterWindowMessageW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNORMAL, SetTimer,
-                TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_TIMER,
+                TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_SETTINGCHANGE,
+                WM_TIMER,
                 WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
             },
         },
@@ -42,7 +43,7 @@ use super::{
     autostart,
     icon::Icons,
     menu::{self, Choice, Item, entry},
-    welcome,
+    theme, welcome,
 };
 use crate::{
     detect::{
@@ -508,6 +509,10 @@ extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam:
             }
             LRESULT(0)
         }
+        WM_SETTINGCHANGE => {
+            theme::refresh();
+            unsafe { DefWindowProcW(window, message, wparam, lparam) }
+        }
         WM_ENDSESSION if wparam.0 != 0 => {
             with_app(App::shutdown);
             LRESULT(0)
@@ -576,6 +581,7 @@ pub fn main(launch: Launch) -> i32 {
         log::line("could not create tray window");
         return 1;
     };
+    theme::follow_system(window);
     TASKBAR_CREATED.store(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) }, Ordering::Relaxed);
     let settings = store::load();
     autostart::follow_current_exe();
