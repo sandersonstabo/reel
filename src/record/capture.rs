@@ -74,10 +74,10 @@ impl Pipeline {
         }
         self.stats.arrived.fetch_add(1, Ordering::Relaxed);
         let time = frame.SystemRelativeTime()?.Duration - self.origin;
-        let Some(stamp) = self.pacer.admit(time) else {
+        if !self.pacer.admit(time) {
             self.stats.paced_out.fetch_add(1, Ordering::Relaxed);
             return Ok(());
-        };
+        }
         let texture: ID3D11Texture2D = unsafe { frame.Surface()?.cast::<IDirect3DDxgiInterfaceAccess>()?.GetInterface()? };
         let (texture_width, texture_height) = texture_size(&texture);
         let source = (
@@ -99,7 +99,7 @@ impl Pipeline {
             }
             Some(slot) => converter
                 .convert(&texture, &slot.texture, slot.slice)
-                .and_then(|_| writer.write_video(&slot, stamp, self.pacer.interval())),
+                .and_then(|_| writer.write_video(&slot, time, self.pacer.interval())),
         };
         self.converter = Some(converter);
         result

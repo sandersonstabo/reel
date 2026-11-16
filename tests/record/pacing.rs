@@ -2,16 +2,17 @@ use reel::record::pacing::Pacer;
 
 const SECOND: i64 = 10_000_000;
 
-fn admitted(pacer: &mut Pacer, times: impl Iterator<Item = i64>) -> Vec<(i64, i64)> {
-    times.filter_map(|time| pacer.admit(time).map(|stamp| (time, stamp))).collect()
+fn kept(pacer: &mut Pacer, times: impl Iterator<Item = i64>) -> Vec<i64> {
+    times.filter(|time| pacer.admit(*time)).collect()
 }
 
 #[test]
-fn faster_source_is_thinned_to_the_target_rate() {
-    let mut pacer = Pacer::new(SECOND, 60);
-    let kept = admitted(&mut pacer, (0..240).map(|n| n * SECOND / 240));
-    assert!((60..=61).contains(&kept.len()), "kept {}", kept.len());
-    assert!(kept.windows(2).all(|pair| pair[1].1 - pair[0].1 == pacer.interval()));
+fn faster_sources_are_thinned_to_the_target_rate() {
+    [144, 165, 240, 360].into_iter().for_each(|rate| {
+        let mut pacer = Pacer::new(SECOND, 60);
+        let count = kept(&mut pacer, (0..rate * 10).map(|n| n * SECOND / rate)).len();
+        assert!((599..=601).contains(&count), "{rate} Hz kept {count} frames in 10 s");
+    });
 }
 
 #[test]
@@ -22,29 +23,28 @@ fn jittery_source_at_the_target_rate_keeps_every_frame() {
         0 => interval * 3 / 10,
         _ => -interval * 3 / 10,
     };
-    let kept = admitted(&mut pacer, (1..=120).map(|n| n * interval + jitter(n)));
-    assert_eq!(kept.len(), 120);
+    assert_eq!(kept(&mut pacer, (1..=600).map(|n| n * interval + jitter(n))).len(), 600);
 }
 
 #[test]
-fn stamps_stay_within_half_a_frame_of_capture_time() {
+fn late_frame_followed_by_an_on_time_frame_keeps_both() {
     let mut pacer = Pacer::new(SECOND, 60);
-    let half = pacer.interval() / 2;
-    let kept = admitted(&mut pacer, (0..1000).map(|n| n * SECOND / 144));
-    assert!(kept.iter().all(|(time, stamp)| (stamp - time).abs() <= half));
+    let interval = pacer.interval();
+    let times = [0, interval, interval * 2 + interval * 6 / 10, interval * 3, interval * 4];
+    assert_eq!(kept(&mut pacer, times.into_iter()).len(), 5);
+}
+
+#[test]
+fn never_bursts_after_a_pause() {
+    let mut pacer = Pacer::new(SECOND, 60);
+    pacer.admit(0);
+    let after_pause = kept(&mut pacer, (0..240).map(|n| SECOND * 5 + n * SECOND / 240));
+    assert!((60..=61).contains(&after_pause.len()));
 }
 
 #[test]
 fn drops_frames_before_the_recording_started() {
     let mut pacer = Pacer::new(SECOND, 60);
-    assert_eq!(pacer.admit(-1), None);
-    assert_eq!(pacer.admit(0), Some(0));
-}
-
-#[test]
-fn resumes_after_a_gap_without_backfilling() {
-    let mut pacer = Pacer::new(SECOND, 60);
-    pacer.admit(0);
-    assert_eq!(pacer.admit(SECOND), Some(pacer.interval() * 60));
-    assert_eq!(pacer.admit(SECOND + 1), None);
+    assert!(!pacer.admit(-1));
+    assert!(pacer.admit(0));
 }
