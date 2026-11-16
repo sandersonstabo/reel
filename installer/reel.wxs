@@ -21,13 +21,13 @@
     </StandardDirectory>
 
     <Feature Id="Main">
-      <Component Id="Executable" Directory="INSTALLFOLDER">
+      <Component Id="Executable" Directory="INSTALLFOLDER" Guid="8C216090-0D82-483C-8D9A-DB5CF5BE7C14">
         <File Id="ReelExe" Source="$(Binary)" Name="reel.exe" />
         <RegistryValue Root="HKCU" Key="Software\Reel" Name="Executable" Type="integer" Value="1" KeyPath="yes" />
         <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
         <RemoveFolder Id="RemoveProgramsDirectory" Directory="ProgramsDirectory" On="uninstall" />
       </Component>
-      <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder" Guid="CB228EDF-B9BE-4BE6-B3E1-4413718EEFF4">
         <Shortcut
           Id="ReelShortcut"
           Name="Reel"
