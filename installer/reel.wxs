@@ -33,6 +33,7 @@
           Name="Reel"
           Description="Lightweight game clipper"
           Target="[INSTALLFOLDER]reel.exe"
+          Arguments="show"
           WorkingDirectory="INSTALLFOLDER"
           Icon="ReelIcon.exe" />
         <RegistryValue Root="HKCU" Key="Software\Reel" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
@@ -41,7 +42,7 @@
 
     <CustomAction Id="QuitRunning" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]reel.exe&quot; quit" Execute="immediate" Return="ignore" />
     <CustomAction Id="RemoveAutostart" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]reel.exe&quot; cleanup" Execute="immediate" Return="ignore" />
-    <CustomAction Id="LaunchReel" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]reel.exe&quot;" Execute="immediate" Return="asyncNoWait" />
+    <CustomAction Id="LaunchReel" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]reel.exe&quot; show" Execute="immediate" Return="asyncNoWait" />
 
     <InstallExecuteSequence>
       <Custom Action="QuitRunning" Before="InstallValidate" Condition="WIX_UPGRADE_DETECTED OR REMOVE~=&quot;ALL&quot;" />

@@ -22,12 +22,13 @@ use windows::{
             },
             Shell::{
                 NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-                NIM_SETVERSION, NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
+                NIF_INFO, NIIF_NOSOUND, NIIF_USER, NIM_SETVERSION, NIN_SELECT, NINF_KEY,
+                NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
                 NOTIFYICONDATAW_0, ShellExecuteW, Shell_NotifyIconW,
             },
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-                GetSystemMetrics, HICON, MSG, PostQuitMessage, RegisterClassW,
+                CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW,
+                GetSystemMetrics, HICON, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
                 RegisterWindowMessageW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNORMAL, SetTimer,
                 TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_TIMER,
                 WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
@@ -55,6 +56,13 @@ use crate::{
 };
 
 const WM_TRAY: u32 = WM_APP + 1;
+const WM_GREET: u32 = WM_APP + 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Launch {
+    Quiet,
+    Greet,
+}
 const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 const HOTKEY_TOGGLE: i32 = 1;
 const HOTKEY_CLIP: i32 = 2;
@@ -177,6 +185,34 @@ impl App {
             let _ = Shell_NotifyIconW(NIM_ADD, &data);
             let _ = Shell_NotifyIconW(NIM_SETVERSION, &data);
         }
+    }
+
+    fn notify(&self, title: &str, body: &str) {
+        let data = NOTIFYICONDATAW {
+            uFlags: NIF_INFO,
+            szInfoTitle: wide(title),
+            szInfo: wide(body),
+            dwInfoFlags: NIIF_USER | NIIF_NOSOUND,
+            hBalloonIcon: self.icons.recording,
+            ..self.notify_data()
+        };
+        let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
+    }
+
+    fn greet(&self, already_running: bool) {
+        let title = match already_running {
+            true => "Reel is already running",
+            false => "Reel is running",
+        };
+        let body = match self.mode {
+            Mode::Off => "Clipping is off. Press F8 to turn it on. Settings are in the tray menu.".to_string(),
+            _ => format!(
+                "It clips games automatically. Press {} to save the last {}. Settings are in the tray menu.",
+                self.settings.clip_key.label(),
+                self.settings.clip_length.label()
+            ),
+        };
+        self.notify(title, &body);
     }
 
     fn refresh_icon(&self) {
@@ -459,6 +495,10 @@ extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam:
             with_app(App::tick);
             LRESULT(0)
         }
+        WM_GREET => {
+            with_app(|app| app.greet(true));
+            LRESULT(0)
+        }
         WM_TRAY => {
             match (lparam.0 & 0xffff) as u32 {
                 WM_CONTEXTMENU | NIN_SELECT | NIN_KEYSELECT => open_menu(window),
@@ -513,9 +553,18 @@ fn create_window() -> Option<HWND> {
     }
 }
 
-pub fn main() -> i32 {
+fn greet_running_copy() {
+    if let Ok(window) = unsafe { FindWindowW(w!("Reel.Tray"), None) } {
+        let _ = unsafe { PostMessageW(Some(window), WM_GREET, WPARAM(0), LPARAM(0)) };
+    }
+}
+
+pub fn main(launch: Launch) -> i32 {
     let _instance = unsafe { CreateMutexW(None, true, w!("Local\\Reel.Tray")) };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        if launch == Launch::Greet {
+            greet_running_copy();
+        }
         return 0;
     }
     let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
@@ -547,6 +596,9 @@ pub fn main() -> i32 {
     with_app(|app| {
         app.add_icon();
         app.tick();
+        if launch == Launch::Greet {
+            app.greet(false);
+        }
     });
     log::line("tray started");
     trim();
