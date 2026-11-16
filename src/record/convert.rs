@@ -22,9 +22,9 @@ use windows::{
 };
 
 use super::{
-    FPS, HEIGHT, WIDTH,
     gpu::Gpu,
     layout::{self, Rect},
+    plan::Plan,
 };
 
 const RGB_FULL_RANGE: u32 = 0;
@@ -49,9 +49,10 @@ fn rect(value: Rect) -> RECT {
 }
 
 impl Converter {
-    pub fn new(gpu: &Gpu, source: (u32, u32)) -> Result<Self> {
+    pub fn new(gpu: &Gpu, source: (u32, u32), plan: &Plan) -> Result<Self> {
+        let output = (plan.resolution.width, plan.resolution.height);
         let rate = DXGI_RATIONAL {
-            Numerator: FPS,
+            Numerator: plan.fps,
             Denominator: 1,
         };
         let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
@@ -60,8 +61,8 @@ impl Converter {
             InputWidth: source.0,
             InputHeight: source.1,
             OutputFrameRate: rate,
-            OutputWidth: WIDTH,
-            OutputHeight: HEIGHT,
+            OutputWidth: output.0,
+            OutputHeight: output.1,
             Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
         };
         let enumerator = unsafe { gpu.video_device.CreateVideoProcessorEnumerator(&content)? };
@@ -73,7 +74,7 @@ impl Converter {
             right: source.0 as i32,
             bottom: source.1 as i32,
         });
-        let target = rect(layout::fit(source, (WIDTH, HEIGHT)));
+        let target = rect(layout::fit(source, output));
         let black = D3D11_VIDEO_COLOR {
             Anonymous: D3D11_VIDEO_COLOR_0 {
                 YCbCr: D3D11_VIDEO_COLOR_YCbCrA {

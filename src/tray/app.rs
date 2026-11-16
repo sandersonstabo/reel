@@ -7,14 +7,19 @@ use std::{
 use windows::{
     Win32::{
         Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, WPARAM},
-        Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT},
+        Media::{
+            Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT},
+            MediaFoundation::{MF_VERSION, MFSTARTUP_LITE, MFStartup},
+        },
         System::{
             LibraryLoader::GetModuleHandleW,
             Threading::{CreateMutexW, GetCurrentProcess, SetProcessWorkingSetSize},
         },
         UI::{
             HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
-            Input::KeyboardAndMouse::{MOD_NOREPEAT, RegisterHotKey, VK_F8},
+            Input::KeyboardAndMouse::{
+                HOT_KEY_MODIFIERS, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_F8,
+            },
             Shell::{
                 NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
                 NIM_SETVERSION, NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
@@ -22,9 +27,10 @@ use windows::{
             },
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-                MSG, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SW_SHOWNORMAL,
-                SetTimer, TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY,
-                WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
+                GetSystemMetrics, HICON, MSG, PostQuitMessage, RegisterClassW,
+                RegisterWindowMessageW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNORMAL, SetTimer,
+                TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY, WM_TIMER,
+                WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
             },
         },
     },
@@ -34,7 +40,7 @@ use windows::{
 use super::{
     autostart,
     icon::Icons,
-    menu::{self, Choice, Snapshot},
+    menu::{self, Choice, Item, entry},
 };
 use crate::{
     detect::{
@@ -42,13 +48,16 @@ use crate::{
         known, probe,
     },
     log, paths,
+    record::{encode::video, plan},
     session::{Action, Cue, Event, Game, Mode, step},
+    settings::{ClipKey, ClipLength, Codec, FrameRate, ResolutionCap, Settings, SizeTarget, store},
     worker::Worker,
 };
 
 const WM_TRAY: u32 = WM_APP + 1;
 const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 const HOTKEY_TOGGLE: i32 = 1;
+const HOTKEY_CLIP: i32 = 2;
 const TIMER_TICK: usize = 1;
 const TICK_MS: u32 = 1000;
 
@@ -60,13 +69,16 @@ thread_local! {
 
 struct App {
     window: HWND,
+    settings: Settings,
     mode: Mode,
     worker: Option<Worker>,
     finishing: Vec<Worker>,
     known: KnownGames,
     last_pid: Option<u32>,
     icons: Icons,
-    hotkey: bool,
+    toggle_key: bool,
+    clip_key: bool,
+    codecs: Option<Vec<(Codec, bool)>>,
 }
 
 fn with_app<T>(f: impl FnOnce(&mut App) -> T) -> Option<T> {
@@ -81,6 +93,8 @@ fn cue(cue: Cue) {
     let alias = match cue {
         Cue::On => w!("DeviceConnect"),
         Cue::Off => w!("DeviceDisconnect"),
+        Cue::Saved => w!("SystemAsterisk"),
+        Cue::Unavailable => w!("SystemExclamation"),
     };
     let _ = unsafe { PlaySoundW(alias, None, SND_ALIAS | SND_ASYNC | SND_NODEFAULT) };
 }
@@ -94,20 +108,46 @@ fn wide<const N: usize>(text: &str) -> [u16; N] {
     buffer
 }
 
+fn screen() -> plan::Resolution {
+    plan::native(
+        unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(2) as u32,
+        unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(2) as u32,
+    )
+}
+
+fn register(window: HWND, id: i32, key: u16) -> bool {
+    unsafe { RegisterHotKey(Some(window), id, HOT_KEY_MODIFIERS(MOD_NOREPEAT.0), u32::from(key)) }.is_ok()
+}
+
+fn mode_for(settings: &Settings) -> Mode {
+    match settings.enabled {
+        true => Mode::Watching { skip: None },
+        false => Mode::Off,
+    }
+}
+
 impl App {
     fn status(&self) -> String {
         let base = match &self.mode {
             Mode::Off => "Reel: off (F8 to turn on)".to_string(),
             Mode::Watching { .. } => "Reel: waiting for a game".to_string(),
-            Mode::Recording(game) => format!("Reel: recording {}", game.name),
+            Mode::Recording(game) => format!(
+                "Reel: buffering {} ({} to clip)",
+                game.name,
+                self.settings.clip_key.label()
+            ),
         };
-        match self.hotkey {
+        let missing: Vec<&str> = [(!self.toggle_key).then_some("F8"), (!self.clip_key).then_some(self.settings.clip_key.label())]
+            .into_iter()
+            .flatten()
+            .collect();
+        match missing.is_empty() {
             true => base,
-            false => format!("{base} (F8 unavailable)"),
+            false => format!("{base} ({} taken by another app)", missing.join(", ")),
         }
     }
 
-    fn icon(&self) -> windows::Win32::UI::WindowsAndMessaging::HICON {
+    fn icon(&self) -> HICON {
         match self.mode {
             Mode::Off => self.icons.off,
             Mode::Watching { .. } => self.icons.watching,
@@ -159,8 +199,14 @@ impl App {
             Action::Start(game) => self.start(&game),
             Action::Stop => {
                 if let Some(worker) = self.worker.take() {
-                    log::line(&format!("stop {}", worker.output().display()));
                     self.finishing.push(worker.stop());
+                }
+            }
+            Action::Save(game) => {
+                let output = paths::output_for(&game.name);
+                let sent = self.worker.as_mut().map(|worker| worker.save(&output));
+                if let Some(Err(error)) = sent {
+                    log::line(&format!("could not request clip: {error}"));
                 }
             }
             Action::Cue(sound) => cue(sound),
@@ -168,10 +214,9 @@ impl App {
     }
 
     fn start(&mut self, game: &Game) {
-        let output = paths::output_for(&game.name);
-        match Worker::spawn(game, &output) {
+        match Worker::spawn(game) {
             Ok(worker) => {
-                log::line(&format!("start {} -> {}", game.name, output.display()));
+                log::line(&format!("buffering {}", game.name));
                 self.worker = Some(worker);
             }
             Err(error) => log::line(&format!("spawn failed for {}: {error}", game.name)),
@@ -207,21 +252,164 @@ impl App {
         }
     }
 
-    fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            status: self.status(),
-            enabled: self.mode != Mode::Off,
-            autostart: autostart::enabled(),
+    fn toggle(&mut self) {
+        self.dispatch(Event::Toggle);
+        self.settings.enabled = self.mode != Mode::Off;
+        store::save(&self.settings);
+    }
+
+    fn rebind_clip_key(&mut self, previous: ClipKey) {
+        let _ = unsafe { UnregisterHotKey(Some(self.window), HOTKEY_CLIP) };
+        self.clip_key = register(self.window, HOTKEY_CLIP, self.settings.clip_key.virtual_key());
+        if !self.clip_key {
+            log::line(&format!(
+                "{} is taken by another app; {} was in use before",
+                self.settings.clip_key.label(),
+                previous.label()
+            ));
+        }
+    }
+
+    fn update(&mut self, change: impl FnOnce(Settings) -> Settings) {
+        let previous = self.settings;
+        self.settings = change(previous);
+        store::save(&self.settings);
+        if previous.clip_key != self.settings.clip_key {
+            self.rebind_clip_key(previous.clip_key);
+        }
+        self.dispatch(Event::SettingsChanged);
+        self.refresh_icon();
+    }
+
+    fn codecs(&mut self) -> Vec<(Codec, bool)> {
+        let probed = self.codecs.get_or_insert_with(|| {
+            let _ = unsafe { MFStartup(MF_VERSION, MFSTARTUP_LITE) };
+            Codec::ALL.into_iter().map(|codec| (codec, video::available(codec))).collect()
+        });
+        probed.clone()
+    }
+
+    fn items(&mut self) -> Vec<Item> {
+        let settings = self.settings;
+        let native = screen();
+        let preview = |target: SizeTarget| plan::label(&plan::plan(native, &Settings { size_target: target, ..settings }));
+        let recording = matches!(self.mode, Mode::Recording(_));
+        let codecs = self.codecs();
+        vec![
+            Item::Note(self.status()),
+            Item::Separator,
+            entry("Clipping on\tF8", settings.enabled, Choice::Toggle),
+            Item::Entry {
+                label: format!("Save clip\t{}", settings.clip_key.label()),
+                checked: false,
+                enabled: recording,
+                choice: Choice::SaveClip,
+            },
+            Item::Separator,
+            Item::Submenu {
+                label: format!("Clip length: {}", settings.clip_length.label()),
+                items: ClipLength::ALL
+                    .into_iter()
+                    .map(|length| entry(length.label(), length == settings.clip_length, Choice::Length(length)))
+                    .collect(),
+            },
+            Item::Submenu {
+                label: format!("Size target: {}", match settings.size_target {
+                    SizeTarget::Unlimited => "none".to_string(),
+                    SizeTarget::Megabytes(megabytes) => format!("{megabytes} MB"),
+                }),
+                items: SizeTarget::ALL
+                    .into_iter()
+                    .map(|target| {
+                        let label = match target {
+                            SizeTarget::Unlimited => format!("None (best quality, {})", preview(target)),
+                            SizeTarget::Megabytes(megabytes) => format!("{megabytes} MB ({})", preview(target)),
+                        };
+                        entry(label, target == settings.size_target, Choice::Target(target))
+                    })
+                    .collect(),
+            },
+            Item::Submenu {
+                label: format!("Resolution: {}", match settings.resolution.height() {
+                    None => format!("native ({}p)", native.height),
+                    Some(height) => format!("{height}p"),
+                }),
+                items: ResolutionCap::ALL
+                    .into_iter()
+                    .map(|cap| {
+                        let (label, enabled) = match cap.height() {
+                            None => (format!("Native ({}p)", native.height), true),
+                            Some(height) => (format!("{height}p"), height <= native.height),
+                        };
+                        Item::Entry {
+                            label,
+                            checked: cap == settings.resolution,
+                            enabled,
+                            choice: Choice::Resolution(cap),
+                        }
+                    })
+                    .collect(),
+            },
+            Item::Submenu {
+                label: format!("Frame rate: {} fps", settings.frame_rate.fps()),
+                items: FrameRate::ALL
+                    .into_iter()
+                    .map(|rate| entry(format!("{} fps", rate.fps()), rate == settings.frame_rate, Choice::FrameRate(rate)))
+                    .collect(),
+            },
+            Item::Submenu {
+                label: format!("Codec: {}", settings.codec.label()),
+                items: codecs
+                    .into_iter()
+                    .map(|(codec, supported)| Item::Entry {
+                        label: match supported {
+                            true => codec.label().to_string(),
+                            false => format!("{} (not supported by this GPU)", codec.label()),
+                        },
+                        checked: codec == settings.codec,
+                        enabled: supported,
+                        choice: Choice::Codec(codec),
+                    })
+                    .collect(),
+            },
+            Item::Submenu {
+                label: format!("Clip key: {}", settings.clip_key.label()),
+                items: ClipKey::ALL
+                    .into_iter()
+                    .map(|key| entry(key.label(), key == settings.clip_key, Choice::Key(key)))
+                    .collect(),
+            },
+            Item::Separator,
+            entry("Start with Windows", autostart::enabled(), Choice::Autostart),
+            entry("Open clips folder", false, Choice::OpenClips),
+            Item::Separator,
+            entry("Quit", false, Choice::Quit),
+        ]
+    }
+
+    fn choose(&mut self, choice: Choice) {
+        match choice {
+            Choice::Toggle => self.toggle(),
+            Choice::SaveClip => self.dispatch(Event::SaveClip),
+            Choice::Length(clip_length) => self.update(|settings| Settings { clip_length, ..settings }),
+            Choice::Target(size_target) => self.update(|settings| Settings { size_target, ..settings }),
+            Choice::Resolution(resolution) => self.update(|settings| Settings { resolution, ..settings }),
+            Choice::FrameRate(frame_rate) => self.update(|settings| Settings { frame_rate, ..settings }),
+            Choice::Codec(codec) => self.update(|settings| Settings { codec, ..settings }),
+            Choice::Key(clip_key) => self.update(|settings| Settings { clip_key, ..settings }),
+            Choice::Autostart => autostart::set(!autostart::enabled()),
+            Choice::OpenClips => open_clips(),
+            Choice::Quit => {}
         }
     }
 
     fn shutdown(&mut self) {
         self.perform(Action::Stop);
-        let _ =unsafe { Shell_NotifyIconW(NIM_DELETE, &self.notify_data()) };
+        let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &self.notify_data()) };
     }
 }
 
-fn open_recordings() {
+fn open_clips() {
     let directory = paths::recordings();
     let _ = fs::create_dir_all(&directory);
     let _ = unsafe {
@@ -236,18 +424,18 @@ fn open_recordings() {
     };
 }
 
-fn choose(window: HWND) {
-    let Some(snapshot) = with_app(|app| app.snapshot()) else {
+fn open_menu(window: HWND) {
+    let Some(items) = with_app(App::items) else {
         return;
     };
-    match menu::show(window, &snapshot) {
-        Some(Choice::Toggle) => {
-            with_app(|app| app.dispatch(Event::Toggle));
-        }
-        Some(Choice::OpenRecordings) => open_recordings(),
-        Some(Choice::Autostart) => autostart::set(!snapshot.autostart),
+    let picked = menu::show(window, &items);
+    trim();
+    match picked {
         Some(Choice::Quit) => {
             let _ = unsafe { DestroyWindow(window) };
+        }
+        Some(choice) => {
+            with_app(|app| app.choose(choice));
         }
         None => {}
     }
@@ -255,8 +443,16 @@ fn choose(window: HWND) {
 
 extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match message {
-        WM_HOTKEY if wparam.0 == HOTKEY_TOGGLE as usize => {
-            with_app(|app| app.dispatch(Event::Toggle));
+        WM_HOTKEY => {
+            match wparam.0 as i32 {
+                HOTKEY_TOGGLE => {
+                    with_app(App::toggle);
+                }
+                HOTKEY_CLIP => {
+                    with_app(|app| app.dispatch(Event::SaveClip));
+                }
+                _ => {}
+            }
             LRESULT(0)
         }
         WM_TIMER => {
@@ -265,7 +461,7 @@ extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam:
         }
         WM_TRAY => {
             match (lparam.0 & 0xffff) as u32 {
-                WM_CONTEXTMENU | NIN_SELECT | NIN_KEYSELECT => choose(window),
+                WM_CONTEXTMENU | NIN_SELECT | NIN_KEYSELECT => open_menu(window),
                 _ => {}
             }
             LRESULT(0)
@@ -324,21 +520,23 @@ pub fn main() -> i32 {
         return 1;
     };
     TASKBAR_CREATED.store(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) }, Ordering::Relaxed);
-    let hotkey = unsafe { RegisterHotKey(Some(window), HOTKEY_TOGGLE, MOD_NOREPEAT, u32::from(VK_F8.0)) }.is_ok();
-    if !hotkey {
-        log::line("F8 is already registered by another program");
-    }
+    let settings = store::load();
+    let toggle_key = register(window, HOTKEY_TOGGLE, VK_F8.0);
+    let clip_key = register(window, HOTKEY_CLIP, settings.clip_key.virtual_key());
     unsafe { SetTimer(Some(window), TIMER_TICK, TICK_MS, None) };
     APP.with(|cell| {
         cell.replace(Some(App {
             window,
-            mode: Mode::Watching { skip: None },
+            settings,
+            mode: mode_for(&settings),
             worker: None,
             finishing: Vec::new(),
             known: KnownGames::new(),
             last_pid: None,
             icons: Icons::new(),
-            hotkey,
+            toggle_key,
+            clip_key,
+            codecs: None,
         }))
     });
     with_app(|app| {

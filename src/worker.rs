@@ -1,38 +1,39 @@
 use std::{
-    env, fs, io,
-    path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    env,
+    io::{self, Write},
+    path::Path,
+    process::{Child, ChildStdin, Command, Stdio},
 };
 
 use crate::{log, session::Game};
 
 pub struct Worker {
     child: Child,
-    output: PathBuf,
+    commands: Option<ChildStdin>,
 }
 
 impl Worker {
-    pub fn spawn(game: &Game, output: &Path) -> io::Result<Self> {
-        if let Some(directory) = output.parent() {
-            fs::create_dir_all(directory)?;
-        }
+    pub fn spawn(game: &Game) -> io::Result<Self> {
         let stderr = log::open().map(Stdio::from).unwrap_or_else(Stdio::null);
-        let child = Command::new(env::current_exe()?)
+        let mut child = Command::new(env::current_exe()?)
             .arg("record")
             .arg(game.window.to_string())
-            .arg(output)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(stderr)
             .spawn()?;
-        Ok(Self {
-            child,
-            output: output.to_path_buf(),
-        })
+        let commands = child.stdin.take();
+        Ok(Self { child, commands })
     }
 
-    pub fn output(&self) -> &Path {
-        &self.output
+    pub fn save(&mut self, path: &Path) -> io::Result<()> {
+        match self.commands.as_mut() {
+            Some(commands) => {
+                writeln!(commands, "save {}", path.display())?;
+                commands.flush()
+            }
+            None => Err(io::ErrorKind::BrokenPipe.into()),
+        }
     }
 
     pub fn exited(&mut self) -> bool {
@@ -40,7 +41,7 @@ impl Worker {
     }
 
     pub fn stop(mut self) -> Self {
-        drop(self.child.stdin.take());
+        drop(self.commands.take());
         self
     }
 }

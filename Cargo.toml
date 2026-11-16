@@ -24,6 +24,7 @@ features = [
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_LibraryLoader",
+  "Win32_System_Ole",
   "Win32_System_Performance",
   "Win32_System_Registry",
   "Win32_System_SystemInformation",
@@ -68,3 +69,31 @@ path = "tests/record/timeline.rs"
 [[test]]
 name = "record_layout"
 path = "tests/record/layout.rs"
+
+[[test]]
+name = "settings_codec"
+path = "tests/settings/codec.rs"
+
+[[test]]
+name = "record_plan"
+path = "tests/record/plan.rs"
+
+[[test]]
+name = "record_ring"
+path = "tests/record/ring.rs"
+
+[[test]]
+name = "mux_annexb"
+path = "tests/mux/annexb.rs"
+
+[[test]]
+name = "mux_av1"
+path = "tests/mux/av1.rs"
+
+[[test]]
+name = "mux_mp4"
+path = "tests/mux/mp4.rs"
+
+[[test]]
+name = "mux_clip"
+path = "tests/mux/clip.rs"

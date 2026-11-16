@@ -1,7 +1,7 @@
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
-    mpsc::Sender,
+    mpsc::{Sender, SyncSender, TrySendError},
 };
 
 use windows::{
@@ -14,6 +14,7 @@ use windows::{
     Win32::{
         Foundation::HWND,
         Graphics::Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Texture2D},
+        Media::MediaFoundation::{IMF2DBuffer, IMFDXGIBuffer, IMFVideoSampleAllocatorEx},
         System::WinRT::{
             Direct3D11::IDirect3DDxgiInterfaceAccess, Graphics::Capture::IGraphicsCaptureItemInterop,
         },
@@ -21,7 +22,14 @@ use windows::{
     core::{Interface, Result, factory},
 };
 
-use super::{FPS, TICKS_PER_SECOND, convert::Converter, gpu::Gpu, pacing::Pacer, writer::Writer};
+use super::{
+    TICKS_PER_SECOND,
+    convert::Converter,
+    encode::video::Frame,
+    gpu::Gpu,
+    pacing::Pacer,
+    plan::Plan,
+};
 
 const POOL_BUFFERS: i32 = 2;
 const MAX_REPORTED_ERRORS: u32 = 5;
@@ -30,16 +38,16 @@ const MAX_REPORTED_ERRORS: u32 = 5;
 pub struct Stats {
     pub arrived: AtomicU64,
     pub paced_out: AtomicU64,
-    pub no_buffer: AtomicU64,
+    pub dropped: AtomicU64,
 }
 
 impl Stats {
     pub fn summary(&self) -> String {
         format!(
-            "arrived {}, thinned by pacer {}, dropped for lack of encoder buffer {}",
+            "arrived {}, thinned by pacer {}, dropped while the encoder was busy {}",
             self.arrived.load(Ordering::Relaxed),
             self.paced_out.load(Ordering::Relaxed),
-            self.no_buffer.load(Ordering::Relaxed),
+            self.dropped.load(Ordering::Relaxed),
         )
     }
 }
@@ -47,8 +55,10 @@ impl Stats {
 struct Pipeline {
     stats: Arc<Stats>,
     gpu: Gpu,
+    plan: Plan,
     device: IDirect3DDevice,
-    writer: Arc<Mutex<Writer>>,
+    allocator: IMFVideoSampleAllocatorEx,
+    frames: SyncSender<Frame>,
     converter: Option<Converter>,
     pacer: Pacer,
     origin: i64,
@@ -65,6 +75,11 @@ fn texture_size(texture: &ID3D11Texture2D) -> (u32, u32) {
 }
 
 impl Pipeline {
+    fn drop_frame(&self) -> Result<()> {
+        self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
     fn on_frame(&mut self, pool: &Direct3D11CaptureFramePool) -> Result<()> {
         let frame = pool.TryGetNextFrame()?;
         let content = frame.ContentSize()?;
@@ -87,22 +102,30 @@ impl Pipeline {
         if source.0 < 2 || source.1 < 2 {
             return Ok(());
         }
+        let Ok(sample) = (unsafe { self.allocator.AllocateSample() }) else {
+            return self.drop_frame();
+        };
         let converter = match self.converter.take() {
             Some(existing) if existing.source() == source => existing,
-            _ => Converter::new(&self.gpu, source)?,
+            _ => Converter::new(&self.gpu, source, &self.plan)?,
         };
-        let mut writer = self.writer.lock().map_err(|_| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))?;
-        let result = match writer.video_slot() {
-            None => {
-                self.stats.no_buffer.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            Some(slot) => converter
-                .convert(&texture, &slot.texture, slot.slice)
-                .and_then(|_| writer.write_video(&slot, time, self.pacer.interval())),
-        };
+        let buffer = unsafe { sample.GetBufferByIndex(0)? };
+        let surface: IMFDXGIBuffer = buffer.cast()?;
+        let mut raw = std::ptr::null_mut();
+        unsafe { surface.GetResource(&ID3D11Texture2D::IID, &mut raw)? };
+        let target = unsafe { ID3D11Texture2D::from_raw(raw) };
+        let converted = converter.convert(&texture, &target, unsafe { surface.GetSubresourceIndex()? });
         self.converter = Some(converter);
-        result
+        converted?;
+        unsafe {
+            buffer.SetCurrentLength(buffer.cast::<IMF2DBuffer>()?.GetContiguousLength()?)?;
+            sample.SetSampleTime(time)?;
+            sample.SetSampleDuration(self.pacer.interval())?;
+        }
+        match self.frames.try_send(Frame(sample)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => self.drop_frame(),
+        }
     }
 
     fn report(&mut self, error: &windows::core::Error) {
@@ -113,23 +136,27 @@ impl Pipeline {
     }
 }
 
+pub fn item(window: HWND) -> Result<GraphicsCaptureItem> {
+    let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+    unsafe { interop.CreateForWindow(window) }
+}
+
 pub struct Capture {
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
     _item: GraphicsCaptureItem,
 }
 
+pub struct Wiring {
+    pub allocator: IMFVideoSampleAllocatorEx,
+    pub frames: SyncSender<Frame>,
+    pub closed: Sender<()>,
+    pub stats: Arc<Stats>,
+    pub origin: i64,
+}
+
 impl Capture {
-    pub fn start(
-        gpu: &Gpu,
-        window: HWND,
-        writer: Arc<Mutex<Writer>>,
-        origin: i64,
-        closed: Sender<()>,
-        stats: Arc<Stats>,
-    ) -> Result<Self> {
-        let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-        let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(window)? };
+    pub fn start(gpu: &Gpu, item: GraphicsCaptureItem, plan: &Plan, wiring: Wiring) -> Result<Self> {
         let device = gpu.winrt()?;
         let size = item.Size()?;
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
@@ -141,13 +168,22 @@ impl Capture {
         let session = pool.CreateCaptureSession(&item)?;
         let _ = session.SetIsBorderRequired(false);
         let _ = session.SetIsCursorCaptureEnabled(false);
+        let Wiring {
+            allocator,
+            frames,
+            closed,
+            stats,
+            origin,
+        } = wiring;
         let pipeline = Mutex::new(Pipeline {
             stats,
             gpu: gpu.clone(),
+            plan: *plan,
             device,
-            writer,
+            allocator,
+            frames,
             converter: None,
-            pacer: Pacer::new(TICKS_PER_SECOND, FPS),
+            pacer: Pacer::new(TICKS_PER_SECOND, plan.fps),
             origin,
             pool_size: size,
             errors: 0,

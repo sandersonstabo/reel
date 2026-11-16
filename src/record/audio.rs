@@ -24,8 +24,9 @@ use windows::{
 use super::{
     CHANNELS, SAMPLE_RATE, TICKS_PER_SECOND,
     clock,
+    encode::audio::AudioEncoder,
+    ring::Ring,
     timeline::{Alignment, Timeline},
-    writer::Writer,
 };
 
 const BYTES_PER_FRAME: usize = CHANNELS as usize * 2;
@@ -80,7 +81,8 @@ impl Drop for Loopback {
 }
 
 struct Sink {
-    writer: Arc<Mutex<Writer>>,
+    encoder: AudioEncoder,
+    ring: Arc<Mutex<Ring>>,
     timeline: Timeline,
     origin: i64,
 }
@@ -93,10 +95,9 @@ impl Sink {
             _ => {
                 let time = self.timeline.position();
                 let duration = self.timeline.duration(frames);
-                self.writer
-                    .lock()
-                    .map_err(|_| Error::from(E_FAIL))?
-                    .write_audio(pcm, time, duration)?;
+                let packets = self.encoder.encode(pcm, time, duration)?;
+                let mut ring = self.ring.lock().map_err(|_| Error::from(E_FAIL))?;
+                packets.into_iter().for_each(|packet| ring.push_audio(packet));
                 self.timeline.advance(frames);
                 Ok(())
             }
@@ -155,10 +156,18 @@ impl Sink {
     }
 }
 
-pub fn pump(writer: Arc<Mutex<Writer>>, origin: i64, running: Arc<AtomicBool>) {
+pub fn pump(ring: Arc<Mutex<Ring>>, bitrate: u32, origin: i64, running: Arc<AtomicBool>) {
     let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let encoder = match AudioEncoder::create(bitrate) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            eprintln!("recorder: no audio encoder: {error}");
+            return;
+        }
+    };
     let mut sink = Sink {
-        writer,
+        encoder,
+        ring,
         timeline: Timeline::new(SAMPLE_RATE, TICKS_PER_SECOND, TOLERANCE_TICKS),
         origin,
     };

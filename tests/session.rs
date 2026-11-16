@@ -78,3 +78,26 @@ fn second_game_does_not_interrupt_a_recording() {
         (Mode::Recording(game(7)), vec![])
     );
 }
+
+#[test]
+fn saving_while_buffering_saves_the_current_game() {
+    assert_eq!(
+        step(Mode::Recording(game(7)), Event::SaveClip),
+        (Mode::Recording(game(7)), vec![Action::Save(game(7)), Action::Cue(Cue::Saved)])
+    );
+}
+
+#[test]
+fn saving_without_a_game_only_signals_unavailable() {
+    assert_eq!(step(watching(), Event::SaveClip), (watching(), vec![Action::Cue(Cue::Unavailable)]));
+    assert_eq!(step(Mode::Off, Event::SaveClip), (Mode::Off, vec![Action::Cue(Cue::Unavailable)]));
+}
+
+#[test]
+fn settings_change_restarts_the_buffer() {
+    assert_eq!(
+        step(Mode::Recording(game(7)), Event::SettingsChanged),
+        (watching(), vec![Action::Stop])
+    );
+    assert_eq!(step(watching(), Event::SettingsChanged), (watching(), vec![]));
+}

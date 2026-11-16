@@ -1,8 +1,10 @@
 pub mod detect;
 pub mod log;
+pub mod mux;
 pub mod naming;
 pub mod paths;
 pub mod record;
 pub mod session;
+pub mod settings;
 pub mod tray;
 pub mod worker;
