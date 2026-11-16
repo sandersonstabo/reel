@@ -3,6 +3,9 @@ name = "reel"
 version = "0.1.0"
 edition = "2024"
 
+[dependencies]
+windows-core = "0.62"
+
 [dependencies.windows]
 version = "0.62"
 features = [
@@ -97,3 +100,7 @@ path = "tests/mux/mp4.rs"
 [[test]]
 name = "mux_clip"
 path = "tests/mux/clip.rs"
+
+[[test]]
+name = "record_level"
+path = "tests/record/level.rs"

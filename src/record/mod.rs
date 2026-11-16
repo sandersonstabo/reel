@@ -5,6 +5,7 @@ pub mod convert;
 pub mod encode;
 pub mod gpu;
 pub mod layout;
+pub mod level;
 pub mod pacing;
 pub mod plan;
 pub mod ring;

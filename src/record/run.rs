@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
         mpsc,
     },
     thread,
@@ -16,13 +16,16 @@ use windows::{
         Foundation::{E_FAIL, HWND},
         Media::MediaFoundation::{MF_VERSION, MFSTARTUP_FULL, MFShutdown, MFStartup},
         System::Com::{COINIT_MULTITHREADED, CoInitializeEx},
-        UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
+        UI::{
+            HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
+            WindowsAndMessaging::GetWindowThreadProcessId,
+        },
     },
     core::{Error, Result},
 };
 
 use super::{
-    CHANNELS, SAMPLE_RATE, TICKS_PER_SECOND, audio,
+    CHANNELS, SAMPLE_RATE, TICKS_PER_SECOND, audio, level,
     capture::{self, Capture, Stats, Wiring},
     clock,
     encode::video::{self, VideoEncoder},
@@ -90,6 +93,8 @@ impl Buffer {
 
 fn record(window: HWND) -> Result<()> {
     let settings = store::load();
+    let mut process = 0u32;
+    unsafe { GetWindowThreadProcessId(window, Some(&mut process)) };
     let gpu = Gpu::create()?;
     let item = capture::item(window)?;
     let size = item.Size()?;
@@ -142,10 +147,12 @@ fn record(window: HWND) -> Result<()> {
             origin,
         },
     )?;
+    let peak = Arc::new(AtomicU16::new(0));
     let audio = {
         let ring = buffer.ring.clone();
+        let peak = peak.clone();
         let running = running.clone();
-        thread::spawn(move || audio::pump(ring, plan.audio_bitrate, origin, running))
+        thread::spawn(move || audio::pump(process, ring, peak, plan.audio_bitrate, origin, running))
     };
     {
         let commands = commands.clone();
@@ -183,6 +190,10 @@ fn record(window: HWND) -> Result<()> {
     running.store(false, Ordering::Relaxed);
     let _ = audio.join();
     eprintln!("recorder: frames {}", stats.summary());
+    eprintln!(
+        "recorder: game audio from process {process} was {}",
+        level::describe(peak.load(Ordering::Relaxed))
+    );
     buffer.ring.lock().map(|_| ()).map_err(|_| Error::from(E_FAIL))
 }
 
