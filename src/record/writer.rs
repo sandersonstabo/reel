@@ -5,26 +5,29 @@ use windows::{
         Foundation::E_FAIL,
         Graphics::Direct3D11::{D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, ID3D11Texture2D},
         Media::MediaFoundation::{
-            IMF2DBuffer, IMFDXGIBuffer, IMFMediaType,
+            CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonMeanBitRate,
+            CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVGOPSize, IMF2DBuffer, IMFAttributes, IMFDXGIBuffer, IMFMediaType,
             IMFSample, IMFSinkWriter, IMFVideoSampleAllocatorEx, MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
             MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS,
             MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
             MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MAX_KEYFRAME_SPACING,
-            MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE,
+            MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_PRIMARIES,
             MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_YUV_MATRIX, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
             MF_SA_D3D11_BINDFLAGS, MF_SINK_WRITER_D3D_MANAGER, MFAudioFormat_AAC,
             MFAudioFormat_PCM, MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer,
             MFCreateSample, MFCreateSinkWriterFromURL, MFCreateVideoSampleAllocatorEx,
             MFMediaType_Audio, MFMediaType_Video, MFNominalRange_16_235,
             MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
-            MFVideoTransferMatrix_BT709, eAVEncH264VProfile_High,
+            MFVideoPrimaries_BT709, MFVideoTransFunc_709, MFVideoTransferMatrix_BT709,
+            eAVEncCommonRateControlMode_PeakConstrainedVBR, eAVEncH264VProfile_High,
         },
     },
     core::{Error, GUID, HSTRING, Interface, Result},
 };
 
 use super::{
-    AUDIO_BYTES_PER_SECOND, CHANNELS, FPS, HEIGHT, SAMPLE_RATE, VIDEO_BITRATE, WIDTH, gpu::Gpu,
+    AUDIO_BYTES_PER_SECOND, CHANNELS, FPS, HEIGHT, SAMPLE_RATE, VIDEO_BITRATE, VIDEO_PEAK_BITRATE,
+    WIDTH, gpu::Gpu,
 };
 
 const BYTES_PER_FRAME: u32 = CHANNELS as u32 * 2;
@@ -63,6 +66,8 @@ fn video_type(subtype: &GUID) -> Result<IMFMediaType> {
         kind.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
         kind.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0 as u32)?;
         kind.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)?;
+        kind.SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0 as u32)?;
+        kind.SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)?;
     }
     Ok(kind)
 }
@@ -80,18 +85,34 @@ fn audio_type(subtype: &GUID, bytes_per_second: u32) -> Result<IMFMediaType> {
     Ok(kind)
 }
 
+fn attributes(capacity: u32) -> Result<IMFAttributes> {
+    let mut created = None;
+    unsafe { MFCreateAttributes(&mut created, capacity)? };
+    created.ok_or_else(|| Error::from(E_FAIL))
+}
+
+fn encoder_settings() -> Result<IMFAttributes> {
+    let settings = attributes(4)?;
+    unsafe {
+        settings.SetUINT32(
+            &CODECAPI_AVEncCommonRateControlMode,
+            eAVEncCommonRateControlMode_PeakConstrainedVBR.0 as u32,
+        )?;
+        settings.SetUINT32(&CODECAPI_AVEncCommonMeanBitRate, VIDEO_BITRATE)?;
+        settings.SetUINT32(&CODECAPI_AVEncCommonMaxBitRate, VIDEO_PEAK_BITRATE)?;
+        settings.SetUINT32(&CODECAPI_AVEncMPVGOPSize, KEYFRAME_INTERVAL)?;
+    }
+    Ok(settings)
+}
+
 impl Writer {
     pub fn create(gpu: &Gpu, path: &Path) -> Result<Self> {
-        let attributes = {
-            let mut created = None;
-            unsafe { MFCreateAttributes(&mut created, 2)? };
-            created.ok_or_else(|| Error::from(E_FAIL))?
-        };
+        let sink_attributes = attributes(2)?;
         unsafe {
-            attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)?;
-            attributes.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, &gpu.manager)?;
+            sink_attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)?;
+            sink_attributes.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, &gpu.manager)?;
         }
-        let sink = unsafe { MFCreateSinkWriterFromURL(&HSTRING::from(path.as_os_str()), None, &attributes)? };
+        let sink = unsafe { MFCreateSinkWriterFromURL(&HSTRING::from(path.as_os_str()), None, &sink_attributes)? };
 
         let encoded = video_type(&MFVideoFormat_H264)?;
         unsafe {
@@ -101,7 +122,7 @@ impl Writer {
         }
         let video = unsafe { sink.AddStream(&encoded)? };
         let raw_video = video_type(&MFVideoFormat_NV12)?;
-        unsafe { sink.SetInputMediaType(video, &raw_video, None)? };
+        unsafe { sink.SetInputMediaType(video, &raw_video, &encoder_settings()?)? };
 
         let audio = unsafe { sink.AddStream(&audio_type(&MFAudioFormat_AAC, AUDIO_BYTES_PER_SECOND)?)? };
         let raw_audio = audio_type(&MFAudioFormat_PCM, SAMPLE_RATE * BYTES_PER_FRAME)?;
@@ -115,11 +136,7 @@ impl Writer {
             unsafe { MFCreateVideoSampleAllocatorEx(&IMFVideoSampleAllocatorEx::IID, &mut raw)? };
             unsafe { IMFVideoSampleAllocatorEx::from_raw(raw) }
         };
-        let allocator_attributes = {
-            let mut created = None;
-            unsafe { MFCreateAttributes(&mut created, 1)? };
-            created.ok_or_else(|| Error::from(E_FAIL))?
-        };
+        let allocator_attributes = attributes(1)?;
         unsafe {
             allocator_attributes.SetUINT32(
                 &MF_SA_D3D11_BINDFLAGS,
