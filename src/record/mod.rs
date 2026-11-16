@@ -1,0 +1,19 @@
+pub mod audio;
+pub mod capture;
+pub mod clock;
+pub mod convert;
+pub mod gpu;
+pub mod layout;
+pub mod pacing;
+pub mod run;
+pub mod timeline;
+pub mod writer;
+
+pub const WIDTH: u32 = 1920;
+pub const HEIGHT: u32 = 1080;
+pub const FPS: u32 = 60;
+pub const VIDEO_BITRATE: u32 = 20_000_000;
+pub const SAMPLE_RATE: u32 = 48_000;
+pub const CHANNELS: u16 = 2;
+pub const AUDIO_BYTES_PER_SECOND: u32 = 24_000;
+pub const TICKS_PER_SECOND: i64 = 10_000_000;
