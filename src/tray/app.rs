@@ -29,7 +29,7 @@ use windows::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
                 GetSystemMetrics, HICON, MSG, PostQuitMessage, RegisterClassW,
                 RegisterWindowMessageW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNORMAL, SetTimer,
-                TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY, WM_TIMER,
+                TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_TIMER,
                 WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
             },
         },
@@ -466,6 +466,10 @@ extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam:
             }
             LRESULT(0)
         }
+        WM_ENDSESSION if wparam.0 != 0 => {
+            with_app(App::shutdown);
+            LRESULT(0)
+        }
         WM_DESTROY => {
             with_app(App::shutdown);
             unsafe { PostQuitMessage(0) };
@@ -521,6 +525,7 @@ pub fn main() -> i32 {
     };
     TASKBAR_CREATED.store(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) }, Ordering::Relaxed);
     let settings = store::load();
+    autostart::follow_current_exe();
     let toggle_key = register(window, HOTKEY_TOGGLE, VK_F8.0);
     let clip_key = register(window, HOTKEY_CLIP, settings.clip_key.virtual_key());
     unsafe { SetTimer(Some(window), TIMER_TICK, TICK_MS, None) };
